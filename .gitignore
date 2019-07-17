@@ -1,3 +1,9 @@
+
+# jupyter checkpoints
+.ipynb_checkpoints/
+
+# data files
 17_b_Wordlog_original.docx
+17_b_Wordlog_original.txt
 17_e_Wordlog.docx
 Gie_Bogaert_20130823_17_GA.xml
