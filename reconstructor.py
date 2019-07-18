@@ -143,6 +143,13 @@ def slide_event_window(event_list):
 
 def is_delete(event_window):
     """report if current event is deleting (next character or selected text)"""
+    if event_window["curr_event"]["type"] == "keyboard" and event_window["curr_event"]["output"] == "DELETE":
+        if not is_replacement(event_window["next_event"]):
+            print(event_window["curr_event"]["id"], "\tDELETE MISSES REPLACEMENT")
+            return False
+        else:
+            return True
+    return False
     return event_window["curr_event"]["type"] == "keyboard" and event_window["curr_event"]["output"] == "DELETE"
 
 def is_backspace(event_window):
@@ -207,14 +214,33 @@ def next_event_decreases_text(event_window):
     """report if the next event will remove from the text."""
     return event_window["next_event"]["doclengthFull"] < event_window["curr_event"]["doclengthFull"]
 
+def next_event_replaces_text(event_window):
+    return event_window["next_event"]["type"] == "replacement"
+
+def print_cursor_context(event_window, current_text_string, context_size):
+    cursor_position = event_window["curr_event"]["positionFull"]
+    curr_cursor_context = current_text_string[cursor_position-context_size:cursor_position+context_size+1]
+    print(curr_cursor_context)
+
+def get_paste_selection(event_window):
+    paste_selection = event_window["next_event"]["output"]
+    return re.sub(r"^\[(.*)\]$", r"\1", paste_selection)
+
 def insert_text(event_window, current_text_string, context_size=20):
     """update the text string with the inserted keyboard input."""
+    if not is_keyboard_event(event_window) and not is_paste_selection(event_window):
+        print(event_window["curr_event"]["id"],"\tassume propagating correction for delayed update")
+        event_window["curr_event"]["doclengthFull"] = event_window["prev_event"]["doclengthFull"]
+        return current_text_string
     cursor_position = event_window["curr_event"]["positionFull"]
     insert_text = event_window["curr_event"]["output"]
     if insert_text in special_keyboard_outputs:
         insert_text = ""
     if insert_text == "LEFT + z": # HACK BASED ON SESSION 17, NEED TO CLEAN UP
         insert_text = "z"
+    if is_paste_selection(event_window):
+        insert_text = get_paste_selection(event_window)
+        print(event_window["curr_event"]["id"], "PASTING SELECTED TEXT:", insert_text)
     before, after = current_text_string[:cursor_position], current_text_string[cursor_position:]
     next_text_string = before + insert_text + after
     if not has_expected_text_length(event_window, next_text_string):
@@ -251,26 +277,94 @@ def text_changes(event_window):
         elif next_event_increases_text(event_window):
             event_window["curr_event"]["doclengthFull"] = event_window["next_event"]["doclengthFull"]
             return True
+        elif event_window["next_event"]["type"] == "keyboard" and event_window["next_event"]["output"] == "DELETE" and event_window["curr_event"]["doclengthFull"] == event_window["next_event"]["doclengthFull"]:
+            event_window["curr_event"]["doclengthFull"] += 1
+            return True
     if is_keyboard_text_remove(event_window):
         # if curr event is text removal without decreasing text length, we assume
         # the doclengthFull update is delayed
+        print(event_window["curr_event"]["id"])
         if is_backspace(event_window) and next_event_decreases_text(event_window):
             event_window["curr_event"]["doclengthFull"] -= 1
+            return True
+        elif is_delete(event_window) and next_event_replaces_text(event_window):
+            delete_start, delete_end, delete_string = parse_replacement(event_window["next_event"])
+            event_window["curr_event"]["doclengthFull"] -= delete_end - delete_start
             return True
         elif next_event_decreases_text(event_window):
             event_window["curr_event"]["doclengthFull"] = event_window["next_event"]["doclengthFull"]
             return True
     return False
 
+def is_left_click(event):
+    return event["type"] == "mouse" and event["output"] == "LEFT Click"
+
+def is_keyboard_cut(event):
+    if not event["type"] == "keyboard":
+        return False
+    if event["output"] == "LCTRL x":
+        return True
+    if event["output"] == "RCTRL x":
+        return True
+    else:
+        return False
+
+def is_keyboard_copy(event):
+    if not event["type"] == "keyboard":
+        return False
+    if event["output"] == "LCTRL c":
+        return True
+    if event["output"] == "RCTRL c":
+        return True
+    else:
+        return False
+
+def is_keyboard_paste(event):
+    if not event["type"] == "keyboard":
+        return False
+    if event["output"] == "LCTRL v":
+        return True
+    if event["output"] == "RCTRL v":
+        return True
+    else:
+        return False
+
+def is_replacement(event):
+    return event["type"] == "replacement"
+
+def is_insert(event):
+    return event["type"] == "insert"
+
+def is_cut_selection(event_window):
+    if not is_left_click(event_window["curr_event"]) and not is_keyboard_cut(event_window["curr_event"]):
+        return False
+    if not is_replacement(event_window["prev_event"]) or not is_replacement(event_window["next_event"]):
+        return False
+    else:
+        return True
+
+def is_paste_selection(event_window):
+    if not is_left_click(event_window["curr_event"]) and not is_keyboard_paste(event_window["curr_event"]):
+        return False
+    if not is_insert(event_window["next_event"]):
+        return False
+    else:
+        print(event_window["curr_event"]["id"], "is paste selection")
+        return True
+
 def remove_text(event_window, current_text_string, context_size=20):
     """update the text string by removing selected text or previous character (backspace) or next character (delete)."""
     cursor_position = event_window["curr_event"]["positionFull"]
-    if event_window["next_event"]["type"] == "replacement" and event_window["curr_event"]["output"] == "DELETE":
+    if is_delete(event_window) and is_replacement(event_window["next_event"]):
         delete_start, delete_end, delete_string = parse_replacement(event_window["next_event"])
         next_text_string = current_text_string[:delete_start] + current_text_string[delete_end:]
-    elif event_window["curr_event"]["type"] == "keyboard" and event_window["curr_event"]["output"] == "BACK":
-        delete_start = event_window["curr_event"]["positionFull"]
-        delete_end = delete_start + 1
+    elif is_cut_selection(event_window):
+        delete_start, delete_end, delete_string = parse_replacement(event_window["prev_event"])
+        next_text_string = current_text_string[:delete_start] + current_text_string[delete_end:]
+        print(event_window["curr_event"]["id"], "CUTTING SELECTED TEXT:", delete_string)
+    elif is_backspace(event_window):
+        delete_end = event_window["curr_event"]["positionFull"]
+        delete_start = delete_end - 1
         next_text_string = current_text_string[:delete_start] + current_text_string[delete_end:]
     else:
         print(event_window)
@@ -286,6 +380,9 @@ def update_current_text_string(event_window, current_text_string, context_size=2
         return insert_text(event_window, current_text_string, context_size=context_size)
     if text_decreases(event_window):
         return remove_text(event_window, current_text_string, context_size=context_size)
+    else:
+        print("no change")
+        raise ValueError("Update triggered with text change event for event id", event_window["curr_event"])
 
 def has_expected_text_length(event_window, next_text_string):
     """report if text string after update of current event has the length report in the event."""
